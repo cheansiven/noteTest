@@ -1,0 +1,91 @@
+# Full stack: SQL Server + ASP.NET Core API + Vue front-end.
+#
+#   docker compose up -d --build     start everything
+#   docker compose logs -f api       follow the API
+#   docker compose down              stop (add -v to also drop the database volume)
+#
+# Once up:  app http://localhost:5273   |   API http://localhost:5215   |   Swagger /swagger
+#
+# Host ports are deliberately non-default (5273 / 5215 / 1434) so this stack can run
+# alongside anything else already bound to 5173, 8080 or 1433.
+# Note: the Docker stack and the local `npm run dev` / `dotnet run` workflow use the same
+# host ports, so run one or the other - not both at once.
+
+name: note-test
+
+services:
+  sqlserver:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    container_name: note-test-sqlserver
+    # The SQL Server image is amd64 only; on Apple Silicon it runs emulated,
+    # so the very first start takes ~30-60s.
+    platform: linux/amd64
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_SA_PASSWORD: ${MSSQL_SA_PASSWORD:-Your_strong_Passw0rd}
+      MSSQL_PID: "Developer"
+    ports:
+      - "1434:1433"
+    volumes:
+      - mssql-data:/var/opt/mssql
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P \"$$MSSQL_SA_PASSWORD\" -C -Q 'SELECT 1' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    restart: unless-stopped
+
+  api:
+    build:
+      # Root context: the project links database/schema.sql from outside backend/.
+      context: .
+      dockerfile: backend/src/Notes.Api/Dockerfile
+    container_name: note-test-api
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      ASPNETCORE_HTTP_PORTS: "8080"
+      # Inside the compose network SQL Server is reachable by service name on 1433.
+      ConnectionStrings__NotesDb: "Server=sqlserver,1433;Database=NotesDb;User Id=sa;Password=${MSSQL_SA_PASSWORD:-Your_strong_Passw0rd};TrustServerCertificate=True;Encrypt=False;"
+      Jwt__Secret: ${JWT_SECRET:-dev-only-signing-key-change-me-in-production-32b+}
+      # nginx proxies /api from the same origin, so CORS only matters if the API is
+      # called directly from a browser on the published port.
+      Cors__AllowedOrigins__0: "http://localhost:5273"
+      Cors__AllowedOrigins__1: "http://localhost:5215"
+    ports:
+      - "5215:8080"
+    depends_on:
+      sqlserver:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8080/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+    restart: unless-stopped
+
+  web:
+    build:
+      context: ./frontend
+      args:
+        # Relative base URL -> same-origin requests proxied by nginx to the api service.
+        VITE_API_BASE_URL: /api
+    container_name: note-test-web
+    ports:
+      - "5273:80"
+    depends_on:
+      api:
+        condition: service_started
+    healthcheck:
+      # 127.0.0.1, not localhost: nginx listens on IPv4 only, so "localhost" can
+      # resolve to ::1 inside the container and the probe would be refused.
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1/ || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+    restart: unless-stopped
+
+volumes:
+  mssql-data:

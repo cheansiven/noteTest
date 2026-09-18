@@ -1,0 +1,10 @@
+node_modules/
+dist/
+.git/
+.vscode/
+.DS_Store
+# Built inside the image with VITE_API_BASE_URL passed as a build argument,
+# so the local dev .env must not leak into the image.
+.env
+.env.*
+!.env.example
