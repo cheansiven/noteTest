@@ -1,0 +1,63 @@
+# Development overlay: the source is bind-mounted into the containers and both apps
+# reload on save. No rebuild needed for a code change.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
+#
+# Same URLs as the production stack: app http://localhost:5273, API http://localhost:5215.
+# Run this OR the plain `docker compose up` - they publish the same host ports.
+
+name: note-test
+
+services:
+  api:
+    # Distinct tag from the production image: both are named after the project and
+    # service by default, so sharing one tag lets `docker compose build` in the other
+    # mode silently replace it and `up` (without --build) then starts the wrong image.
+    image: note-test-api-dev
+    build:
+      target: develop
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+    volumes:
+      # Source from the host; build output stays in the named volume at /artifacts,
+      # so the container never writes Linux binaries into the host's bin/obj.
+      - ./backend:/src/backend
+      - ./database:/src/database
+      - api-artifacts:/artifacts
+    healthcheck:
+      # `dotnet watch` compiles four projects on first start, which takes a while.
+      start_period: 180s
+      retries: 20
+
+  web:
+    image: note-test-web-dev
+    build:
+      target: develop
+    # Vite serves the app itself in dev; nginx is not in the picture, so the published
+    # port has to move from 80 to Vite's own 5273.
+    ports: !override
+      - "5273:5273"
+    environment:
+      # Bind mounts on macOS and Windows do not deliver inotify events into the
+      # container, so the file watcher has to poll.
+      VITE_DOCKER: "true"
+      # Proxy /api to the API service the way nginx does in the production image, so
+      # the browser sees one origin in both stacks. Overrides frontend/.env, which
+      # points at the published port for a non-containerised `npm run dev`.
+      VITE_API_BASE_URL: /api
+      VITE_API_PROXY_TARGET: http://api:8080
+    volumes:
+      - ./frontend:/app
+      # Keeps the container's Linux-native node_modules from being shadowed by the
+      # host's macOS ones (esbuild and rollup ship platform-specific binaries).
+      - web-node-modules:/app/node_modules
+    healthcheck: !override
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:5273/ || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 60s
+
+volumes:
+  api-artifacts:
+  web-node-modules:

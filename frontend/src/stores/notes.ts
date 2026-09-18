@@ -77,6 +77,14 @@ export const useNotesStore = defineStore('notes', () => {
     }
   }
 
+  /**
+   * Applies query state without fetching. Used when restoring from the URL, where the
+   * caller decides when to load so a reload does not fire two requests.
+   */
+  function hydrateQuery(patch: Partial<NoteQuery>): void {
+    Object.assign(query, { ...DEFAULT_QUERY, ...patch })
+  }
+
   /** Applies a partial query change; anything but paging resets to page 1. */
   async function applyQuery(patch: Partial<NoteQuery>): Promise<void> {
     Object.assign(query, patch)
@@ -134,7 +142,7 @@ export const useNotesStore = defineStore('notes', () => {
     return noteService.get(id)
   }
 
-  function $resetAll(): void {
+  function reset(): void {
     items.value = []
     totalCount.value = 0
     totalPages.value = 0
@@ -157,6 +165,7 @@ export const useNotesStore = defineStore('notes', () => {
     isEmpty,
     hasActiveFilters,
     fetchNotes,
+    hydrateQuery,
     applyQuery,
     resetQuery,
     goToPage,
@@ -164,6 +173,6 @@ export const useNotesStore = defineStore('notes', () => {
     updateNote,
     deleteNote,
     getNote,
-    $resetAll,
+    reset,
   }
 })

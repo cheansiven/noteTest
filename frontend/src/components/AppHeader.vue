@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { useAuthStore } from '@/stores/auth'
 
-const auth = useAuthStore()
 const emit = defineEmits<{ signOut: [] }>()
+const auth = useAuthStore()
 </script>
 
 <template>

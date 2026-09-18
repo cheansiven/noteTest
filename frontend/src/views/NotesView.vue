@@ -10,7 +10,8 @@ import NoteDetailDialog from '@/components/NoteDetailDialog.vue'
 import NoteEditorDialog from '@/components/NoteEditorDialog.vue'
 import NotesToolbar from '@/components/NotesToolbar.vue'
 import PaginationBar from '@/components/PaginationBar.vue'
-import { toErrorMessage } from '@/lib/http'
+import { useAsyncAction } from '@/composables/useAsyncAction'
+import { useNotesUrlSync } from '@/composables/useNotesUrlSync'
 import { useAuthStore } from '@/stores/auth'
 import { useNotesStore } from '@/stores/notes'
 import { useToastStore } from '@/stores/toast'
@@ -21,12 +22,15 @@ const notes = useNotesStore()
 const toasts = useToastStore()
 const router = useRouter()
 
+// Search, filters, sort and page live in the address bar, so the view survives a
+// reload and can be shared.
+const { hydrate } = useNotesUrlSync()
+
 const editorOpen = ref(false)
 const editingNote = ref<Note | null>(null)
 
 const detailOpen = ref(false)
 const detailNote = ref<Note | null>(null)
-const detailLoading = ref(false)
 
 const confirmOpen = ref(false)
 const pendingDelete = ref<{ id: string; title: string } | null>(null)
@@ -36,48 +40,55 @@ const deleteMessage = computed(
 )
 
 onMounted(() => {
+  hydrate()
   void notes.fetchNotes()
   // Confirms the restored token is still valid and picks up profile changes.
   void auth.refreshProfile()
 })
 
-/* ------------------------------------------------------------------ create -- */
+/* -------------------------------------------------------------------- read -- */
+
+// Opening a note needs the full record: the list only carries a short preview.
+const loadDetail = useAsyncAction(
+  async (id: string) => {
+    detailNote.value = await notes.getNote(id)
+  },
+  {
+    errorMessage: 'Could not open that note.',
+    onError: async () => {
+      detailOpen.value = false
+      await notes.fetchNotes()
+    },
+  },
+)
+
+function openDetail(item: NoteListItem): void {
+  detailNote.value = null
+  detailOpen.value = true
+  void loadDetail.run(item.id)
+}
+
+/* ------------------------------------------------------------ create/update -- */
 
 function openCreate(): void {
   editingNote.value = null
   editorOpen.value = true
 }
 
-/* -------------------------------------------------------------------- read -- */
-
-async function openDetail(item: NoteListItem): Promise<void> {
-  detailNote.value = null
-  detailLoading.value = true
-  detailOpen.value = true
-
-  try {
-    detailNote.value = await notes.getNote(item.id)
-  } catch (err) {
-    detailOpen.value = false
-    toasts.error(toErrorMessage(err, 'Could not open that note.'))
-    await notes.fetchNotes()
-  } finally {
-    detailLoading.value = false
-  }
-}
-
-/* ------------------------------------------------------------------ update -- */
-
-async function openEdit(item: NoteListItem): Promise<void> {
-  try {
-    // The list only carries a preview, so fetch the full note before editing.
-    editingNote.value = await notes.getNote(item.id)
+const loadForEdit = useAsyncAction(
+  async (id: string) => {
+    editingNote.value = await notes.getNote(id)
     detailOpen.value = false
     editorOpen.value = true
-  } catch (err) {
-    toasts.error(toErrorMessage(err, 'Could not open that note for editing.'))
-    await notes.fetchNotes()
-  }
+  },
+  {
+    errorMessage: 'Could not open that note for editing.',
+    onError: () => notes.fetchNotes(),
+  },
+)
+
+function openEdit(item: NoteListItem): void {
+  void loadForEdit.run(item.id)
 }
 
 function editFromDetail(): void {
@@ -87,21 +98,20 @@ function editFromDetail(): void {
   editorOpen.value = true
 }
 
-async function saveNote(payload: NotePayload): Promise<void> {
-  try {
-    if (editingNote.value) {
-      await notes.updateNote(editingNote.value.id, payload)
-      toasts.success('Note updated.')
-    } else {
-      await notes.createNote(payload)
-      toasts.success('Note created.')
-    }
-    editorOpen.value = false
-    editingNote.value = null
-  } catch (err) {
-    toasts.error(toErrorMessage(err, 'Could not save the note.'))
-  }
-}
+const saveNote = useAsyncAction(
+  (payload: NotePayload) =>
+    editingNote.value
+      ? notes.updateNote(editingNote.value.id, payload)
+      : notes.createNote(payload),
+  {
+    successMessage: () => (editingNote.value ? 'Note updated.' : 'Note created.'),
+    errorMessage: 'Could not save the note.',
+    onSuccess: () => {
+      editorOpen.value = false
+      editingNote.value = null
+    },
+  },
+)
 
 /* ------------------------------------------------------------------ delete -- */
 
@@ -110,18 +120,22 @@ function askDelete(item: NoteListItem | Note): void {
   confirmOpen.value = true
 }
 
-async function performDelete(): Promise<void> {
-  const target = pendingDelete.value
-  if (!target) return
+const deleteNote = useAsyncAction(
+  (id: string) => notes.deleteNote(id),
+  {
+    successMessage: () => `Deleted "${pendingDelete.value?.title ?? 'note'}".`,
+    errorMessage: 'Could not delete the note.',
+    onSuccess: () => {
+      confirmOpen.value = false
+      pendingDelete.value = null
+      detailOpen.value = false
+    },
+  },
+)
 
-  try {
-    await notes.deleteNote(target.id)
-    toasts.success(`Deleted "${target.title}".`)
-    confirmOpen.value = false
-    pendingDelete.value = null
-    detailOpen.value = false
-  } catch (err) {
-    toasts.error(toErrorMessage(err, 'Could not delete the note.'))
+function confirmDelete(): void {
+  if (pendingDelete.value) {
+    void deleteNote.run(pendingDelete.value.id)
   }
 }
 
@@ -133,7 +147,7 @@ function applyQuery(patch: Partial<NoteQuery>): void {
 
 function signOut(): void {
   auth.logout()
-  notes.$resetAll()
+  notes.reset()
   toasts.info('Signed out.')
   void router.push({ name: 'login' })
 }
@@ -236,15 +250,15 @@ function signOut(): void {
     <NoteEditorDialog
       :open="editorOpen"
       :note="editingNote"
-      :saving="notes.saving"
-      @save="saveNote"
+      :saving="saveNote.pending.value"
+      @save="saveNote.run"
       @close="editorOpen = false"
     />
 
     <NoteDetailDialog
       :open="detailOpen"
       :note="detailNote"
-      :loading="detailLoading"
+      :loading="loadDetail.pending.value"
       @close="detailOpen = false"
       @edit="editFromDetail"
       @remove="detailNote && askDelete(detailNote)"
@@ -255,8 +269,8 @@ function signOut(): void {
       title="Delete note"
       :message="deleteMessage"
       confirm-label="Delete"
-      :busy="notes.saving"
-      @confirm="performDelete"
+      :busy="deleteNote.pending.value"
+      @confirm="confirmDelete"
       @cancel="confirmOpen = false"
     />
   </div>

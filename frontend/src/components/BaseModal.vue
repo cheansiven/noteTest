@@ -1,5 +1,7 @@
 <script setup lang="ts">
-import { nextTick, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref } from 'vue'
+import { useFocusTrap } from '@/composables/useFocusTrap'
+import { useScrollLock } from '@/composables/useScrollLock'
 
 const props = withDefaults(
   defineProps<{
@@ -14,35 +16,21 @@ const props = withDefaults(
 const emit = defineEmits<{ close: [] }>()
 
 const panel = ref<HTMLElement | null>(null)
+const isOpen = computed(() => props.open)
+
+// Focus stays inside the dialog and returns to the trigger on close; background
+// scrolling is locked while any dialog is open.
+useFocusTrap(panel, isOpen)
+useScrollLock(isOpen)
 
 function onKeydown(event: KeyboardEvent): void {
-  if (event.key === 'Escape') {
+  if (props.open && event.key === 'Escape') {
     emit('close')
   }
 }
 
-watch(
-  () => props.open,
-  async (open) => {
-    if (open) {
-      document.addEventListener('keydown', onKeydown)
-      // Stop the page behind the dialog from scrolling.
-      document.body.style.overflow = 'hidden'
-      await nextTick()
-      // Move focus into the dialog so keyboard and screen-reader users land here.
-      panel.value?.querySelector<HTMLElement>('[data-autofocus]')?.focus()
-    } else {
-      document.removeEventListener('keydown', onKeydown)
-      document.body.style.overflow = ''
-    }
-  },
-  { immediate: true },
-)
-
-onBeforeUnmount(() => {
-  document.removeEventListener('keydown', onKeydown)
-  document.body.style.overflow = ''
-})
+document.addEventListener('keydown', onKeydown)
+onBeforeUnmount(() => document.removeEventListener('keydown', onKeydown))
 </script>
 
 <template>
