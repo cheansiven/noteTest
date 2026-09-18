@@ -4,8 +4,6 @@ import BaseModal from '@/components/BaseModal.vue'
 import type { Note, NotePayload } from '@/types'
 import { formatDateTime } from '@/utils/format'
 
-const TITLE_MAX = 200
-
 const props = defineProps<{
   open: boolean
   note: Note | null
@@ -16,6 +14,8 @@ const emit = defineEmits<{
   save: [payload: NotePayload]
   close: []
 }>()
+
+const TITLE_MAX = 200
 
 const title = ref('')
 const content = ref('')

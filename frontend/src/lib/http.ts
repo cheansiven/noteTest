@@ -1,4 +1,4 @@
-import axios, { AxiosError } from 'axios'
+import axios, { type AxiosError } from 'axios'
 import { session } from '@/lib/session'
 
 export const http = axios.create({

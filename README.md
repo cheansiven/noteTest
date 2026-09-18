@@ -217,9 +217,11 @@ Errors come back as RFC 7807 `ProblemDetails`.
 └── frontend/
     ├── Dockerfile              Vite build -> nginx
     ├── nginx.conf              SPA fallback + /api proxy to the api service
-    └── src/
+    ├── eslint.config.ts        Type-aware linting; the suite runs clean
+    └── src/                    81 unit tests live beside the code as *.spec.ts
         ├── views/              LoginView, RegisterView, NotesView
         ├── components/         Cards, dialogs, toolbar, toasts, pagination
+        ├── composables/        Focus trap, scroll lock, async actions, URL sync
         ├── stores/             Pinia: auth, notes, toast
         ├── services/           Typed API wrappers
         ├── lib/                Axios instance + session storage
@@ -294,16 +296,52 @@ timestamp rules can be asserted exactly instead of with a sleep.
 
 ---
 
+## Front-end notes
+
+**State lives in the URL.** Search, filters, sort and page are mirrored into the address
+bar, so a filtered view survives a reload and can be shared or bookmarked. Values coming
+back out are validated rather than trusted — a hand-edited `sortBy=DROP TABLE` falls back
+to the default instead of being forwarded to the API. Updates use `replace`, not `push`,
+because search is debounced per keystroke and pushing each one would bury the previous
+page under near-identical history entries.
+
+**Dialogs are actually accessible.** `useFocusTrap` keeps Tab and Shift+Tab cycling inside
+an open dialog and hands focus back to whatever opened it. Setting initial focus alone is
+not enough: without a trap, Tab walks straight out into the page behind, which for a
+keyboard-only user means operating a UI they cannot see.
+
+**The scroll lock is reference counted.** Dialogs stack — deleting from the note detail
+view leaves two open — so a plain boolean would restore scrolling as soon as the inner one
+closed, while the outer one still covered the page.
+
+**Repetitive error handling is a composable.** `useAsyncAction` wraps a user-triggered
+operation with its pending flag, its success toast and a failure toast built from the API's
+ProblemDetails, and returns whether it succeeded. Without it the same five-line try/catch is
+copied per button, and one missed `catch` makes a failed save look like a successful one.
+
+**Requests that have been superseded are dropped.** The notes store aborts an in-flight
+list request when a newer one starts, so fast typing cannot leave stale results on screen.
+
+> Deliberately not included: a runtime schema validator (zod) over API responses, and a
+> form library. Both are reasonable at a larger size; here they would add ceremony to two
+> small forms and one well-typed client.
+
+---
+
 ## Tests
 
 ```bash
 cd backend
+dotnet test                                # everything (110 tests)
+dotnet test tests/Notes.Domain.UnitTests   # fast, no infrastructure needed
 
-dotnet test                                      # everything (109 tests)
-dotnet test tests/Notes.Domain.UnitTests         # fast, no infrastructure needed
+cd ../frontend
+npm test                                   # 81 unit tests, no infrastructure needed
+npm run lint                               # type-aware ESLint, clean
+npm run typecheck                          # vue-tsc
 ```
 
-The three unit suites need nothing running. The integration suite boots the real API
+The front-end suite and the three back-end unit suites need nothing running. The integration suite boots the real API
 in-process with `WebApplicationFactory` and talks to a real SQL Server, creating a uniquely
 named database per run and dropping it afterwards — so start one first:
 
@@ -355,14 +393,15 @@ MSSQL_SA_PASSWORD='An0ther_Str0ng_Pass!' JWT_SECRET='a-real-secret-at-least-32-b
 
 ## Verification
 
-**Automated tests — 109, all passing.**
+**Automated tests — 191, all passing.**
 
 | Suite | Count | Covers |
 | --- | --- | --- |
 | `Notes.Domain.UnitTests` | 45 | Value-object rules, entity invariants, `Result` semantics |
 | `Notes.Application.UnitTests` | 23 | Use cases against test doubles, including a controllable clock |
 | `Notes.Infrastructure.UnitTests` | 14 | BCrypt salting/verification, JWT claims and expiry, clock precision |
-| `Notes.Api.IntegrationTests` | 27 | Real API + real SQL Server: SQL behaviour, auth, status codes, isolation |
+| `Notes.Api.IntegrationTests` | 28 | Real API + real SQL Server: SQL behaviour, auth, status codes, isolation |
+| front-end (Vitest) | 81 | Stores, composables, the HTTP error mapper, session storage, components |
 
 **Manual and end-to-end checks.**
 
@@ -384,8 +423,8 @@ MSSQL_SA_PASSWORD='An0ther_Str0ng_Pass!' JWT_SECRET='a-real-secret-at-least-32-b
 - **Health:** `/health` now probes SQL Server and reports per-check status.
 
 ```bash
-cd backend  && dotnet test     # 109 tests, 0 warnings (warnings are errors)
-cd frontend && npm run build   # vue-tsc type-check + production bundle
+cd backend  && dotnet test     # 110 tests, 0 warnings (warnings are errors)
+cd frontend && npm test && npm run lint && npm run build   # 81 tests, clean lint, bundle
 docker compose up -d --build   # all three services report healthy
 ```
 
@@ -395,7 +434,7 @@ docker compose up -d --build   # all three services report healthy
 
 - Refresh tokens (the current JWT simply expires after 12 hours).
 - Tags or folders, plus full-text search once the note count grows.
-- Front-end tests (Vitest for the stores, Playwright committed as a suite rather than the
-  one-off script used here).
+- Commit the Playwright end-to-end suite as a project rather than the one-off script used
+  here; the Vitest unit suite is in place.
 - Optimistic concurrency on update (a `RowVersion` column plus `If-Match`), so two editors
   cannot silently overwrite each other.
