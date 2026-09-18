@@ -29,7 +29,40 @@ docker compose logs -f api       # follow the API
 docker compose down              # stop; add -v to also delete the database volume
 ```
 
-### Option B — local development (hot reload)
+### Option B — Docker with your code mounted (live reload)
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
+```
+
+Same URLs, but the source is bind-mounted instead of baked into the images:
+
+- **Backend** runs under `dotnet watch`; saving a `.cs` file recompiles and restarts the API.
+- **Frontend** runs the Vite dev server with hot module replacement; saving a `.vue` or
+  `.ts` file updates the page without a reload.
+
+Nothing needs rebuilding for a code change — only a dependency change (a new NuGet or npm
+package) needs `--build` again.
+
+Four details that make this work cleanly:
+
+- **.NET build output goes to `/artifacts`**, a named volume outside the mount, via
+  `UseArtifactsOutput`. The container's Linux binaries therefore never collide with the
+  `bin/obj` folders your host tooling writes, and you can keep running `dotnet build` or
+  `dotnet test` on the host at the same time.
+- **`node_modules` stays in a volume**, so the container's Linux-native esbuild and rollup
+  binaries are not shadowed by the macOS ones in your working copy.
+- **The Vite dev server proxies `/api`** to the API container, exactly as nginx does in the
+  production image, so the browser talks to a single origin in both stacks.
+- **The dev images are tagged separately** (`note-test-api-dev`, `note-test-web-dev`).
+  Compose names images after the project and service by default, so without this a
+  `docker compose build` in one mode would overwrite the other mode's image and a later
+  `up` without `--build` would quietly start the wrong one.
+
+File watching uses polling in both containers, because bind mounts on macOS and Windows do
+not deliver inotify events into a container.
+
+### Option C — local toolchain (no containers for the apps)
 
 Three terminals, in this order:
 
@@ -38,7 +71,7 @@ Three terminals, in this order:
 docker compose up -d sqlserver
 
 # 2. API  -> http://localhost:5215
-cd backend/NotesApi
+cd backend/src/Notes.Api
 dotnet run
 
 # 3. Front-end -> http://localhost:5273
@@ -47,7 +80,7 @@ npm install
 npm run dev
 ```
 
-> Both options publish the same host ports, so run one or the other — not both at once.
+> All three options publish the same host ports, so run one at a time.
 
 Either way, the API creates the `NotesDb` database and applies `database/schema.sql` on
 start-up, so there is no manual migration step.
@@ -165,10 +198,11 @@ Errors come back as RFC 7807 `ProblemDetails`.
 ```
 .
 ├── docker-compose.yml          Full stack: sqlserver + api + web
+├── docker-compose.dev.yml      Overlay: mounts the source, live reload for both apps
 ├── database/
 │   └── schema.sql              Single source of truth for the schema (idempotent)
 ├── backend/
-│   ├── Notes.sln
+│   ├── Notes.slnx
 │   ├── Directory.Build.props   Shared build settings; warnings are errors
 │   ├── src/
 │   │   ├── Notes.Domain/           Entities, value objects, Result - no dependencies
@@ -341,6 +375,11 @@ MSSQL_SA_PASSWORD='An0ther_Str0ng_Pass!' JWT_SECRET='a-real-secret-at-least-32-b
 - **Docker stack:** nginx SPA fallback (`/notes` → 200), the `/api` proxy reaching the API
   container, Swagger on the published port, cache headers, the shipped bundle compiling in
   `baseURL: "/api"`, and notes surviving a full `docker compose down && up -d`.
+- **Dev stack (mounted source):** the same browser suite passes against it; editing a `.cs`
+  file on the host was picked up by `dotnet watch` in ~4s, and editing a `.vue` file updated
+  the running page with **0 navigations** (true HMR, not a reload). Verified that the
+  container writes its build output to `/artifacts` and leaves the host's `bin`/`obj`
+  untouched, so a host build still succeeds while the container runs.
 - **Rate limiting:** 40 rapid sign-in attempts produced 30 × `401` then 10 × `429`.
 - **Health:** `/health` now probes SQL Server and reports per-check status.
 
